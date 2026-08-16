@@ -120,3 +120,63 @@ def create_task(payload: TaskCreate):
         "title": payload.title.strip(),
         "done": False
     }
+@app.put("/tasks/{task_id}", summary="Update a Task", description="Replaces a task's title and/or completion status in the database.")
+def update_task(task_id: int, payload: TaskUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # 1. Check if the task exists and fetch current values
+    cursor.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"error": f"Task {task_id} not found"})
+        
+    current_title = row["title"]
+    current_done = row["done"]
+    
+    # 2. Handle optional title update with validation
+    if payload.title is not None:
+        if not payload.title.strip():
+            conn.close()
+            raise HTTPException(status_code=400, detail={"error": "Title cannot be empty"})
+        current_title = payload.title.strip()
+        
+    # 3. Handle optional done update (stored as 1 or 0 in SQLite)
+    if payload.done is not None:
+        current_done = 1 if payload.done else 0
+        
+    # 4. Run the SQL UPDATE query
+    cursor.execute(
+        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+        (current_title, current_done, task_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    return {
+        "id": task_id,
+        "title": current_title,
+        "done": bool(current_done)
+    }
+
+@app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a Task", description="Removes a task from the database completely.")
+def delete_task(task_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check if task exists first
+    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"error": f"Task {task_id} not found"})
+        
+    # Stage 3: Delete from database using parameterized query
+    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
