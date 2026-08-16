@@ -24,7 +24,6 @@ def init_db():
         )
     """)
     
-    # Seed three example tasks only if the table is empty
     cursor.execute("SELECT COUNT(*) FROM tasks")
     count = cursor.fetchone()[0]
     
@@ -72,7 +71,6 @@ def get_all_tasks():
     rows = cursor.fetchall()
     conn.close()
     
-    # Convert sqlite3.Row objects to standard dictionaries (mapping done from 0/1 to False/True if desired, or keep integers)
     tasks = []
     for row in rows:
         tasks.append({
@@ -86,7 +84,6 @@ def get_all_tasks():
 def get_task(task_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Parameterized query using ? placeholder for safety
     cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
     row = cursor.fetchone()
     conn.close()
@@ -99,4 +96,27 @@ def get_task(task_id: int):
         "title": row["title"],
         "done": bool(row["done"])
     }
-
+    
+@app.post("/tasks", status_code=status.HTTP_201_CREATED, summary="Create a Task", description="Adds a new task to the SQLite database with done set to false.")
+def create_task(payload: TaskCreate):
+    # Validation carried over from Assignment 1
+    if not payload.title.strip():
+        raise HTTPException(status_code=400, detail={"error": "Title cannot be empty"})
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Stage 2: Insert into database using parameterized query
+    cursor.execute("INSERT INTO tasks (title, done) VALUES (?, ?)", (payload.title.strip(), 0))
+    conn.commit()
+    
+    # Grab the auto-assigned ID from the database
+    new_task_id = cursor.lastrowid
+    conn.close()
+    
+    # Return the newly created task representation
+    return {
+        "id": new_task_id,
+        "title": payload.title.strip(),
+        "done": False
+    }
