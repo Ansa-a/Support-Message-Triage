@@ -1,12 +1,31 @@
+import os
 import sqlite3
-from fastapi import FastAPI, HTTPException, status, Response
-from pydantic import BaseModel, Field
 from typing import Optional
+from fastapi import FastAPI, HTTPException, status, Depends, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+# Load environment variables from .env
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY in environment variables.")
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Security scheme for Swagger UI Bearer token integration
+security = HTTPBearer()
 
 app = FastAPI(
-    title="fastapi-todo",
-    version="1.0",
-    description="A lightweight CRUD API for managing a SQLite database."
+    title="fastapi-supabase-auth",
+    version="2.0",
+    description="A secure FastAPI backend integrated with Supabase Auth and SQLite tasks."
 )
 
 DB_FILE = "tasks.db"
@@ -14,8 +33,6 @@ DB_FILE = "tasks.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # Create table if it doesn't exist
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,30 +40,24 @@ def init_db():
             done INTEGER NOT NULL DEFAULT 0
         )
     """)
-    
-    cursor.execute("SELECT COUNT(*) FROM tasks")
-    count = cursor.fetchone()[0]
-    
-    if count == 0:
-        sample_tasks = [
-            ("Buy milk", 0),
-            ("Write code", 1),
-            ("Build API", 0)
-        ]
-        cursor.executemany("INSERT INTO tasks (title, done) VALUES (?, ?)", sample_tasks)
-        conn.commit()
-        
+    conn.commit()
     conn.close()
 
-# Initialize the database and seed data on startup
 init_db()
 
-# Helper function to get a database connection and return rows as dictionaries
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
-    # This allows us to access columns by name like a dictionary
     conn.row_factory = sqlite3.Row
     return conn
+
+# --- Pydantic Models for Auth & Tasks ---
+class SignUpRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1)
@@ -55,128 +66,94 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1)
     done: Optional[bool] = None
 
-@app.get("/", summary="Root Endpoint", description="Returns basic API metadata and available endpoints.")
+# --- Dependency / Middleware Guard for Token Verification ---
+def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """
+    Stage 3 & 4 Guard: Extracts the bearer token, verifies it via Supabase,
+    and returns the authenticated user's metadata or raises 401.
+    """
+    token = credentials.credentials
+    try:
+        # Ask Supabase if the token is valid
+        user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "Invalid or expired token"}
+            )
+        return user_response.user
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired token"}
+        )
+
+# --- Routes ---
+
+@app.get("/", summary="Root Endpoint")
 def read_root():
-    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
+    return {"name": "FlyRank Auth API", "version": "2.0", "endpoints": ["/auth/signup", "/auth/login", "/protected/profile"]}
 
-@app.get("/health", summary="Health Check", description="Verifies that the server is up and running.")
+@app.get("/health", summary="Health Check")
 def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "supabase_connected": True}
 
-@app.get("/tasks", summary="List All Tasks", description="Returns the complete list of tasks from SQLite.")
-def get_all_tasks():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tasks")
-    rows = cursor.fetchall()
-    conn.close()
+# --- Stage 1: Auth Endpoints ---
+
+@app.post("/auth/signup", status_code=status.HTTP_201_CREATED, summary="Sign Up")
+def signup(payload: SignUpRequest):
+    if not payload.email or not payload.password:
+        raise HTTPException(status_code=400, detail={"error": "Email and password are required"})
     
-    tasks = []
-    for row in rows:
-        tasks.append({
-            "id": row["id"],
-            "title": row["title"],
-            "done": bool(row["done"])
+    try:
+        response = supabase.auth.sign_up({
+            "email": payload.email,
+            "password": payload.password
         })
-    return tasks
+        return {"message": "User created successfully", "user": response.user}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"error": str(e)})
 
-@app.get("/tasks/{task_id}", summary="Get a Single Task", description="Retrieves a specific task by its unique ID from SQLite.")
-def get_task(task_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
-    conn.close()
+@app.post("/auth/login", status_code=status.HTTP_200_OK, summary="Log In")
+def login(payload: LoginRequest):
+    if not payload.email or not payload.password:
+        raise HTTPException(status_code=400, detail={"error": "Email and password are required"})
     
-    if row is None:
-        raise HTTPException(status_code=404, detail={"error": f"Task {task_id} not found"})
-        
+    try:
+        response = supabase.auth.sign_in_with_password({
+            "email": payload.email,
+            "password": payload.password
+        })
+        return {
+            "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token,
+            "token_type": "bearer"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail={"error": "Invalid login credentials"})
+
+# --- Stage 2 & 3: Public and Protected Gates ---
+
+@app.get("/public/info", status_code=status.HTTP_200_OK, summary="Public Info")
+def public_info():
+    return {"message": "Welcome stranger! This info is public."}
+
+@app.get("/protected/profile", status_code=status.HTTP_200_OK, summary="Protected Profile")
+def protected_profile(user: dict = Depends(verify_bearer_token)):
+    """
+    Protected route verified via Supabase Auth token.
+    """
     return {
-        "id": row["id"],
-        "title": row["title"],
-        "done": bool(row["done"])
-    }
-    
-@app.post("/tasks", status_code=status.HTTP_201_CREATED, summary="Create a Task", description="Adds a new task to the SQLite database with done set to false.")
-def create_task(payload: TaskCreate):
-    # Validation carried over from Assignment 1
-    if not payload.title.strip():
-        raise HTTPException(status_code=400, detail={"error": "Title cannot be empty"})
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Stage 2: Insert into database using parameterized query
-    cursor.execute("INSERT INTO tasks (title, done) VALUES (?, ?)", (payload.title.strip(), 0))
-    conn.commit()
-    
-    # Grab the auto-assigned ID from the database
-    new_task_id = cursor.lastrowid
-    conn.close()
-    
-    # Return the newly created task representation
-    return {
-        "id": new_task_id,
-        "title": payload.title.strip(),
-        "done": False
-    }
-@app.put("/tasks/{task_id}", summary="Update a Task", description="Replaces a task's title and/or completion status in the database.")
-def update_task(task_id: int, payload: TaskUpdate):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # 1. Check if the task exists and fetch current values
-    cursor.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
-    
-    if row is None:
-        conn.close()
-        raise HTTPException(status_code=404, detail={"error": f"Task {task_id} not found"})
-        
-    current_title = row["title"]
-    current_done = row["done"]
-    
-    # 2. Handle optional title update with validation
-    if payload.title is not None:
-        if not payload.title.strip():
-            conn.close()
-            raise HTTPException(status_code=400, detail={"error": "Title cannot be empty"})
-        current_title = payload.title.strip()
-        
-    # 3. Handle optional done update (stored as 1 or 0 in SQLite)
-    if payload.done is not None:
-        current_done = 1 if payload.done else 0
-        
-    # 4. Run the SQL UPDATE query
-    cursor.execute(
-        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
-        (current_title, current_done, task_id)
-    )
-    conn.commit()
-    conn.close()
-    
-    return {
-        "id": task_id,
-        "title": current_title,
-        "done": bool(current_done)
+        "message": "Access granted to secure profile",
+        "user_id": user.id,
+        "email": user.email,
+        "created_at": user.created_at
     }
 
-@app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a Task", description="Removes a task from the database completely.")
-def delete_task(task_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Check if task exists first
-    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
-    row = cursor.fetchone()
-    
-    if row is None:
-        conn.close()
-        raise HTTPException(status_code=404, detail={"error": f"Task {task_id} not found"})
-        
-    # Stage 3: Delete from database using parameterized query
-    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    conn.commit()
-    conn.close()
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+@app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Log Out")
+def logout(user: dict = Depends(verify_bearer_token)):
+    try:
+        supabase.auth.sign_out()
+        return None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"error": str(e)})
