@@ -157,3 +157,79 @@ def logout(user: dict = Depends(verify_bearer_token)):
         return None
     except Exception as e:
         raise HTTPException(status_code=400, detail={"error": str(e)})
+    # --- Stage 2 & 3: Task CRUD Endpoints (Protected Sanctuary) ---
+
+@app.post("/tasks", status_code=status.HTTP_201_CREATED, summary="Create Task")
+def create_task(payload: TaskCreate, user: dict = Depends(verify_bearer_token)):
+    """
+    Create a new task for the authenticated user.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO tasks (title, done) VALUES (?, ?)",
+        (payload.title, 0)
+    )
+    conn.commit()
+    task_id = cursor.lastrowid
+    conn.close()
+    return {"id": task_id, "title": payload.title, "done": False}
+
+@app.get("/tasks", status_code=status.HTTP_200_OK, summary="Get All Tasks")
+def get_tasks(user: dict = Depends(verify_bearer_token)):
+    """
+    Retrieve all tasks from the SQLite database.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title, done FROM tasks")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    tasks = [{"id": row["id"], "title": row["title"], "done": bool(row["done"])} for row in rows]
+    return tasks
+
+@app.put("/tasks/{task_id}", status_code=status.HTTP_200_OK, summary="Update Task")
+def update_task(task_id: int, payload: TaskUpdate, user: dict = Depends(verify_bearer_token)):
+    """
+    Update an existing task's title or completion status.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check if task exists
+    cursor.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"error": "Task not found"})
+    
+    new_title = payload.title if payload.title is not None else task["title"]
+    new_done = int(payload.done) if payload.done is not None else task["done"]
+    
+    cursor.execute(
+        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
+        (new_title, new_done, task_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    return {"id": task_id, "title": new_title, "done": bool(new_done)}
+
+@app.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete Task")
+def delete_task(task_id: int, user: dict = Depends(verify_bearer_token)):
+    """
+    Delete a task by its ID.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM tasks WHERE id = ?", (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"error": "Task not found"})
+    
+    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return None
