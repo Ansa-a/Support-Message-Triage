@@ -1,0 +1,34 @@
+[
+  {
+    "input": "My payment failed three times and my subscription is locked.",
+    "expected": { "category": "billing", "urgency": "critical", "confidence": 0.99 }
+  },
+  {
+    "input": "App crashes immediately on startup when I log in.",
+    "expected": { "category": "technical", "urgency": "high", "confidence": 0.95 }
+  },
+  {
+    "input": "Can you add dark mode support to the dashboard?",
+    "expected": { "category": "feature_request", "urgency": "low", "confidence": 0.90 }
+  },
+  {
+    "input": "Where do I update my email address?",
+    "expected": { "category": "account", "urgency": "low", "confidence": 0.95 }
+  },
+  {
+    "input": "Hello, is anyone there?",
+    "expected": { "category": "general", "urgency": "low", "confidence": 0.80 }
+  },
+  {
+    "input": "Server timeout errors happening continuously on API endpoints!",
+    "expected": { "category": "technical", "urgency": "critical", "confidence": 0.98 }
+  },
+  {
+    "input": "I need a refund for my annual plan right now.",
+    "expected": { "category": "billing", "urgency": "high", "confidence": 0.92 }
+  },
+  {
+    "input": "Thanks for the great help earlier!",
+    "expected": { "category": "general", "urgency": "low", "confidence": 0.99 }
+  }
+]
